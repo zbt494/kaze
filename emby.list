@@ -1,4 +1,10 @@
+# Nyamedia
 DOMAIN-SUFFIX,bangumi.ca
-DOMAIN-SUFFIX,misaya.org
+DOMAIN-SUFFIX,ap-cn01.emby.bangumi.ca
+DOMAIN-SUFFIX,ap-cn02.emby.bangumi.ca
+DOMAIN-SUFFIX,ap-cn03.emby.bangumi.ca
+# Paul_电报服
 DOMAIN-SUFFIX,cf.imetyou.top
+# Okemby
 DOMAIN-SUFFIX,link00.okemby.org
+DOMAIN-SUFFIX,link01.okemby.org
