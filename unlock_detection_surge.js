@@ -30,14 +30,87 @@ function request(url, opts = {}) {
 }
 
 async function fetchProxy() {
-  const r = await request("http://ip-api.com/json/?lang=zh-CN", { timeout: 4000 });
-  try {
-    const data = JSON.parse(r && r.data || "{}");
-    const cc = data.countryCode || "XX";
-    return { cc, flag: getFlag(cc), country: data.country || "未知" };
-  } catch (_) {
-    return { cc: "XX", flag: "", country: "未知" };
-  }
+  const sources = [
+    {
+      name: "ip-api",
+      url: "http://ip-api.com/json/?lang=zh-CN",
+      parse: body => {
+        const d = JSON.parse(body || "{}");
+        return {
+          source: "ip-api",
+          ip: d.query || "",
+          cc: d.countryCode || "XX",
+          country: d.country || "未知",
+          city: d.city || "",
+          asn: d.as || ""
+        };
+      }
+    },
+    {
+      name: "ip.sb",
+      url: "https://api.ip.sb/geoip",
+      parse: body => {
+        const d = JSON.parse(body || "{}");
+        return {
+          source: "ip.sb",
+          ip: d.ip || "",
+          cc: d.country_code || "XX",
+          country: d.country || "未知",
+          city: d.city || "",
+          asn: d.asn ? `AS${d.asn} ${d.organization || ""}`.trim() : (d.organization || "")
+        };
+      }
+    },
+    {
+      name: "ipapi.co",
+      url: "https://ipapi.co/json/",
+      parse: body => {
+        const d = JSON.parse(body || "{}");
+        return {
+          source: "ipapi.co",
+          ip: d.ip || "",
+          cc: d.country_code || "XX",
+          country: d.country_name || "未知",
+          city: d.city || "",
+          asn: d.asn || ""
+        };
+      }
+    },
+    {
+      name: "ipinfo",
+      url: "https://ipinfo.io/json",
+      parse: body => {
+        const d = JSON.parse(body || "{}");
+        return {
+          source: "ipinfo",
+          ip: d.ip || "",
+          cc: d.country || "XX",
+          country: d.country || "未知",
+          city: d.city || "",
+          asn: d.org || ""
+        };
+      }
+    }
+  ];
+
+  const results = await Promise.all(sources.map(async s => {
+    const r = await request(s.url, {
+      timeout: 5000,
+      headers: { "User-Agent": BASE_UA, "Accept": "application/json" }
+    });
+    try {
+      if (!r || !r.data) return null;
+      return s.parse(r.data);
+    } catch (_) {
+      return null;
+    }
+  }));
+
+  const valid = results.filter(Boolean);
+  const primary = valid[0] || { ip: "", cc: "XX", country: "未知", city: "", asn: "", source: "none" };
+  primary.flag = getFlag(primary.cc);
+  primary.sources = valid;
+  return primary;
 }
 
 async function checkNetflix() {
@@ -157,8 +230,20 @@ function fmtResult(name, res, proxy) {
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
+    const geoLines = proxy.sources && proxy.sources.length
+      ? proxy.sources.map(s => {
+          const city = s.city ? ` ${s.city}` : "";
+          return `${s.source}: ${getFlag(s.cc)}${s.cc} ${s.country}${city}`;
+        })
+      : [`定位源: ${proxy.flag}${proxy.cc} ${proxy.country}`];
+
     const content = [
-      `当前出口: ${proxy.flag}${proxy.cc} ${proxy.country}`,
+      `当前 IP: ${proxy.ip || "未知"}`,
+      `主定位: ${proxy.flag}${proxy.cc} ${proxy.country}${proxy.city ? " " + proxy.city : ""}`,
+      proxy.asn ? `ASN: ${proxy.asn}` : "",
+      "",
+      "多源定位",
+      ...geoLines,
       "",
       "流媒体解锁",
       `YouTube: ✅ 已解锁 › ${proxy.flag}${proxy.cc}`,
@@ -171,7 +256,7 @@ function fmtResult(name, res, proxy) {
       fmtResult("Gemini", gemini, proxy),
       "",
       `更新时间: ${time}`
-    ].join("\n");
+    ].filter(line => line !== "").join("\n");
 
     $done({
       title: "解锁检测",
