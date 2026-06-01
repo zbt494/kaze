@@ -63,6 +63,25 @@ async function fetchProxy() {
   return primary;
 }
 
+async function checkYouTube() {
+  const r = await request("https://www.youtube.com/premium", {
+    timeout: 6000,
+    headers: {
+      "User-Agent": BASE_UA,
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+    },
+    followRedirect: false
+  });
+  const status = r && r.response && r.response.status;
+  const body = String(r && r.data || "");
+  if (!status) return { status: "检测失败", code: "ERR" };
+  if (status === 403 || /not available in your country|isn't available in your country|Premium is not available/i.test(body)) {
+    return { status: "未解锁", code: "NO" };
+  }
+  if (status >= 200 && status < 400) return { status: "已解锁", code: "OK" };
+  return { status: "检测失败", code: "ERR" };
+}
+
 async function checkNetflix() {
   const probes = ["https://www.netflix.com/title/70143836", "https://www.netflix.com/title/81280792"];
   for (const url of probes) {
@@ -119,14 +138,13 @@ function fmtResult(name, res, proxy) {
 
 (async () => {
   try {
-    const [proxy, netflix, disney, chatgpt, claude, gemini] = await Promise.all([
-      fetchProxy(), checkNetflix(), checkDisney(), checkChatGPT(), checkClaude(), checkGemini()
+    const [proxy, youtube, netflix, disney, chatgpt, claude, gemini] = await Promise.all([
+      fetchProxy(), checkYouTube(), checkNetflix(), checkDisney(), checkChatGPT(), checkClaude(), checkGemini()
     ]);
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     const geoLines = proxy.sources.length ? proxy.sources.map(s => `${s.source}: ${getFlag(s.cc)}${s.cc} ${s.country}${s.city ? " " + s.city : ""}`) : ["定位源: 获取失败"];
     const content = [
-      "版本: v12-fixed",
       `当前 IP: ${proxy.ip || "未知"}`,
       `主定位: ${proxy.flag}${proxy.cc} ${proxy.country}${proxy.city ? " " + proxy.city : ""}`,
       proxy.asn ? `ASN: ${proxy.asn}` : "",
@@ -135,7 +153,7 @@ function fmtResult(name, res, proxy) {
       ...geoLines,
       "",
       "流媒体解锁",
-      `YouTube: ✅ 已解锁 › ${proxy.flag}${proxy.cc}`,
+      fmtResult("YouTube", youtube, proxy),
       fmtResult("Netflix", netflix, proxy),
       fmtResult("Disney+", disney, proxy),
       "",
