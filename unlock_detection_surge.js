@@ -64,10 +64,45 @@ async function checkDisney() {
 }
 
 async function checkChatGPT() {
-  const r = await request("https://chatgpt.com/cdn-cgi/trace", { timeout: 4000 });
-  if (!r || !r.data) return { status: "未解锁", code: "NO" };
-  const m = r.data.match(/loc=([A-Z]{2})/);
-  return { status: "已解锁", code: m && m[1] ? m[1].toUpperCase() : "OK" };
+  // 严格检测：ChatGPT 的 Cloudflare trace 可访问不等于 ChatGPT 可用。
+  // 这里先取 trace 地区，再访问 OpenAI backend API。受限地区通常会返回 unsupported_country / 403。
+  const trace = await request("https://chatgpt.com/cdn-cgi/trace", {
+    timeout: 4000,
+    headers: { "User-Agent": BASE_UA }
+  });
+
+  let cc = "OK";
+  if (trace && trace.data) {
+    const m = trace.data.match(/loc=([A-Z]{2})/);
+    if (m && m[1]) cc = m[1].toUpperCase();
+  }
+
+  const r = await request("https://chatgpt.com/backend-api/models", {
+    timeout: 6000,
+    headers: {
+      "User-Agent": BASE_UA,
+      "Accept": "application/json,text/plain,*/*",
+      "Referer": "https://chatgpt.com/"
+    },
+    followRedirect: false
+  });
+
+  if (!r || !r.response) return { status: "检测失败", code: "ERR" };
+
+  const status = r.response.status;
+  const body = String(r.data || "");
+
+  if (status === 403 || /unsupported_country|not available|not supported|country/i.test(body)) {
+    return { status: "未解锁", code: "NO" };
+  }
+
+  // 未登录时可能返回 401/403/404，地区可用性检测主要看是否出现 unsupported_country。
+  // 2xx/3xx/401 通常说明没有被地区封锁。
+  if ((status >= 200 && status < 400) || status === 401) {
+    return { status: "已解锁", code: cc };
+  }
+
+  return { status: "检测失败", code: "ERR" };
 }
 
 async function checkClaude() {
