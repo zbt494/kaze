@@ -1,0 +1,9 @@
+#!name=流媒体与AI解锁检测
+#!desc=流媒体与 AI 解锁检测面板，移植自 Egern Widget 逻辑。
+#!system=ios
+
+[Panel]
+解锁检测 = script-name=unlock_detection,update-interval=600
+
+[Script]
+unlock_detection = type=generic,timeout=30,script-path=https://raw.githubusercontent.com/zbt494/kaze/refs/heads/main/unlock_detection_surge.js
