@@ -1,5 +1,5 @@
-// Surge Panel: 解锁检测稳定版
-// 说明：去掉策略组读取与 ChatGPT 检测，避免分流/多层策略组场景误判。
+// Surge Panel: 解锁检测 v12-fixed
+// 修复：ChatGPT 对 HK/CN 等地区显示未解锁；移除策略组读取，避免误导。
 
 const BASE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 const TIMEOUT = 6000;
@@ -8,18 +8,12 @@ function getFlag(code) {
   if (!code || code === "XX") return "";
   try {
     return String.fromCodePoint(...String(code).toUpperCase().split("").map(c => 127397 + c.charCodeAt()));
-  } catch (_) {
-    return "";
-  }
+  } catch (_) { return ""; }
 }
 
 function request(url, opts = {}) {
   return new Promise(resolve => {
-    const req = {
-      url,
-      headers: opts.headers || {},
-      timeout: opts.timeout || TIMEOUT
-    };
+    const req = { url, headers: opts.headers || {}, timeout: opts.timeout || TIMEOUT };
     if (typeof opts.followRedirect === "boolean") req["auto-redirect"] = opts.followRedirect;
     $httpClient.get(req, (error, response, data) => {
       if (error) return resolve(null);
@@ -33,37 +27,23 @@ async function fetchProxy() {
     {
       source: "ip-api",
       url: "http://ip-api.com/json/?lang=zh-CN",
-      parse: body => {
-        const d = JSON.parse(body || "{}");
-        return { source: "ip-api", ip: d.query || "", cc: d.countryCode || "XX", country: d.country || "未知", city: d.city || "", asn: d.as || "" };
-      }
+      parse: body => { const d = JSON.parse(body || "{}"); return { source: "ip-api", ip: d.query || "", cc: d.countryCode || "XX", country: d.country || "未知", city: d.city || "", asn: d.as || "" }; }
     },
     {
       source: "ip.sb",
       url: "https://api.ip.sb/geoip",
-      parse: body => {
-        const d = JSON.parse(body || "{}");
-        return { source: "ip.sb", ip: d.ip || "", cc: d.country_code || "XX", country: d.country || "未知", city: d.city || "", asn: d.asn ? `AS${d.asn} ${d.organization || ""}`.trim() : (d.organization || "") };
-      }
+      parse: body => { const d = JSON.parse(body || "{}"); return { source: "ip.sb", ip: d.ip || "", cc: d.country_code || "XX", country: d.country || "未知", city: d.city || "", asn: d.asn ? `AS${d.asn} ${d.organization || ""}`.trim() : (d.organization || "") }; }
     },
     {
       source: "ipinfo",
       url: "https://ipinfo.io/json",
-      parse: body => {
-        const d = JSON.parse(body || "{}");
-        return { source: "ipinfo", ip: d.ip || "", cc: d.country || "XX", country: d.country || "未知", city: d.city || "", asn: d.org || "" };
-      }
+      parse: body => { const d = JSON.parse(body || "{}"); return { source: "ipinfo", ip: d.ip || "", cc: d.country || "XX", country: d.country || "未知", city: d.city || "", asn: d.org || "" }; }
     }
   ];
 
   const results = await Promise.all(sources.map(async s => {
     const r = await request(s.url, { timeout: 5000, headers: { "User-Agent": BASE_UA, "Accept": "application/json" } });
-    try {
-      if (!r || !r.data) return null;
-      return s.parse(r.data);
-    } catch (_) {
-      return null;
-    }
+    try { return r && r.data ? s.parse(r.data) : null; } catch (_) { return null; }
   }));
 
   const valid = results.filter(Boolean);
@@ -78,23 +58,15 @@ async function fetchProxy() {
     || valid.find(x => x.cc === bestCc && x.source === "ipinfo")
     || valid.find(x => x.cc === bestCc)
     || valid[0];
-
   primary.flag = getFlag(primary.cc);
   primary.sources = valid;
   return primary;
 }
 
 async function checkNetflix() {
-  const probes = [
-    "https://www.netflix.com/title/70143836",
-    "https://www.netflix.com/title/81280792"
-  ];
+  const probes = ["https://www.netflix.com/title/70143836", "https://www.netflix.com/title/81280792"];
   for (const url of probes) {
-    const r = await request(url, {
-      timeout: 6000,
-      headers: { "User-Agent": BASE_UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" },
-      followRedirect: false
-    });
+    const r = await request(url, { timeout: 6000, headers: { "User-Agent": BASE_UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" }, followRedirect: false });
     if (!r || !r.response) continue;
     const status = r.response.status;
     const body = String(r.data || "");
@@ -113,14 +85,13 @@ async function checkDisney() {
 }
 
 async function checkChatGPT() {
-  try {
-    const r = await request("https://chatgpt.com/cdn-cgi/trace", { timeout: 4000 });
-    if (!r || !r.data) return { status: "未解锁", code: "NO" };
-    const m = r.data.match(/loc=([A-Z]{2})/);
-    return { status: "已解锁", code: m && m[1] ? m[1].toUpperCase() : "OK" };
-  } catch (_) {
-    return { status: "未解锁", code: "NO" };
-  }
+  const r = await request("https://chatgpt.com/cdn-cgi/trace", { timeout: 5000, headers: { "User-Agent": BASE_UA } });
+  if (!r || !r.data) return { status: "检测失败", code: "ERR" };
+  const m = r.data.match(/loc=([A-Z]{2})/);
+  const cc = m && m[1] ? m[1].toUpperCase() : "XX";
+  const blocked = ["CN", "HK", "MO", "RU", "IR", "KP", "SY", "CU", "SD", "SS", "VE", "BY"];
+  if (blocked.indexOf(cc) >= 0) return { status: "未解锁", code: "NO", region: cc };
+  return { status: "已解锁", code: cc };
 }
 
 async function checkClaude() {
@@ -141,7 +112,8 @@ async function checkGemini() {
 
 function fmtResult(name, res, proxy) {
   if (res.code === "OK") return `${name}: ✅ ${res.status} › ${proxy.flag}${proxy.cc}`;
-  if (res.code === "NO") return `${name}: ❌ ${res.status}`;
+  if (res.code === "NO") return `${name}: ❌ ${res.status}${res.region ? " › " + getFlag(res.region) + res.region : ""}`;
+  if (/^[A-Z]{2}$/.test(res.code)) return `${name}: ✅ ${res.status} › ${getFlag(res.code)}${res.code}`;
   return `${name}: ⚠️ ${res.status}`;
 }
 
@@ -150,15 +122,11 @@ function fmtResult(name, res, proxy) {
     const [proxy, netflix, disney, chatgpt, claude, gemini] = await Promise.all([
       fetchProxy(), checkNetflix(), checkDisney(), checkChatGPT(), checkClaude(), checkGemini()
     ]);
-
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-
-    const geoLines = proxy.sources.length
-      ? proxy.sources.map(s => `${s.source}: ${getFlag(s.cc)}${s.cc} ${s.country}${s.city ? " " + s.city : ""}`)
-      : ["定位源: 获取失败"];
-
+    const geoLines = proxy.sources.length ? proxy.sources.map(s => `${s.source}: ${getFlag(s.cc)}${s.cc} ${s.country}${s.city ? " " + s.city : ""}`) : ["定位源: 获取失败"];
     const content = [
+      "版本: v12-fixed",
       `当前 IP: ${proxy.ip || "未知"}`,
       `主定位: ${proxy.flag}${proxy.cc} ${proxy.country}${proxy.city ? " " + proxy.city : ""}`,
       proxy.asn ? `ASN: ${proxy.asn}` : "",
@@ -178,7 +146,6 @@ function fmtResult(name, res, proxy) {
       "",
       `更新时间: ${time}`
     ].filter(Boolean).join("\n");
-
     $done({ title: "解锁检测", content, icon: "lock.open.fill", "icon-color": "#007AFF" });
   } catch (e) {
     $done({ title: "解锁检测", content: `检测失败: ${e && e.message ? e.message : e}`, icon: "xmark.octagon.fill", "icon-color": "#FF3B30" });
