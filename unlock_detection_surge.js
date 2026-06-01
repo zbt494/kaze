@@ -113,15 +113,45 @@ async function fetchProxy() {
   return primary;
 }
 
+function getSelectedPolicy(groupName) {
+  try {
+    if (typeof $surge !== "undefined" && $surge.selectGroupDetails) {
+      const d = $surge.selectGroupDetails(groupName);
+      if (d && d.selected) return d.selected;
+    }
+  } catch (_) {}
+  return "读取失败/非 select 组";
+}
+
 async function checkNetflix() {
-  const r = await request("https://www.netflix.com/title/70143836", {
-    timeout: 5000,
-    headers: { "User-Agent": BASE_UA },
-    followRedirect: false
-  });
-  const status = r && r.response && r.response.status;
-  if (status === 200) return { status: "已解锁", code: "OK" };
-  if (status === 403 || status === 404) return { status: "未解锁", code: "NO" };
+  const probes = [
+    "https://www.netflix.com/title/70143836",
+    "https://www.netflix.com/title/81280792"
+  ];
+
+  for (const url of probes) {
+    const r = await request(url, {
+      timeout: 6000,
+      headers: {
+        "User-Agent": BASE_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+      },
+      followRedirect: false
+    });
+
+    if (!r || !r.response) continue;
+    const status = r.response.status;
+    const body = String(r.data || "");
+
+    if (status === 200 || status === 301 || status === 302 || status === 401) {
+      return { status: "已解锁", code: "OK" };
+    }
+    if (status === 403 || status === 404 || /title is not available|not available|unavailable/i.test(body)) {
+      return { status: "未解锁", code: "NO" };
+    }
+  }
+
   return { status: "检测失败", code: "ERR" };
 }
 
@@ -205,7 +235,9 @@ function fmtResult(name, res, proxy) {
 
   if (res.code === "OK") {
     mark = "✅";
-    suffix = `${proxy.flag}${proxy.cc}`;
+    suffix = proxy && proxy.cc ? `${proxy.flag}${proxy.cc}` : "";
+  } else if (res.code === "NO") {
+    mark = "❌";
   } else if (/^[A-Z]{2}$/.test(res.code)) {
     mark = "✅";
     suffix = `${getFlag(res.code)}${res.code}`;
@@ -237,8 +269,15 @@ function fmtResult(name, res, proxy) {
         })
       : [`定位源: ${proxy.flag}${proxy.cc} ${proxy.country}`];
 
+    const aigcPolicy = getSelectedPolicy("AIGC");
+    const proxyPolicy = getSelectedPolicy("Proxy");
+    const finalPolicy = getSelectedPolicy("FINAL");
+
     const content = [
       `当前 IP: ${proxy.ip || "未知"}`,
+      `AIGC 节点: ${aigcPolicy}`,
+      `Proxy 节点: ${proxyPolicy}`,
+      `FINAL 节点: ${finalPolicy}`,
       `主定位: ${proxy.flag}${proxy.cc} ${proxy.country}${proxy.city ? " " + proxy.city : ""}`,
       proxy.asn ? `ASN: ${proxy.asn}` : "",
       "",
