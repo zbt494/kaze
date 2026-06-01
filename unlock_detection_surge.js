@@ -107,7 +107,34 @@ async function fetchProxy() {
   }));
 
   const valid = results.filter(Boolean);
-  const primary = valid[0] || { ip: "", cc: "XX", country: "未知", city: "", asn: "", source: "none" };
+
+  function choosePrimary(list) {
+    if (!list.length) return { ip: "", cc: "XX", country: "未知", city: "", asn: "", source: "none" };
+
+    // 多源多数表决：避免 ip-api 单源把 HK 误判成 FR 时影响面板结果。
+    const counts = {};
+    list.forEach(x => {
+      const cc = x.cc || "XX";
+      counts[cc] = (counts[cc] || 0) + 1;
+    });
+
+    let bestCc = list[0].cc || "XX";
+    let bestCount = counts[bestCc] || 0;
+    Object.keys(counts).forEach(cc => {
+      if (counts[cc] > bestCount) {
+        bestCc = cc;
+        bestCount = counts[cc];
+      }
+    });
+
+    // 同票时优先信任 ip.sb / ipinfo，再退回第一个。
+    return list.find(x => x.cc === bestCc && x.source === "ip.sb")
+      || list.find(x => x.cc === bestCc && x.source === "ipinfo")
+      || list.find(x => x.cc === bestCc)
+      || list[0];
+  }
+
+  const primary = choosePrimary(valid);
   primary.flag = getFlag(primary.cc);
   primary.sources = valid;
   return primary;
@@ -116,11 +143,21 @@ async function fetchProxy() {
 function getSelectedPolicy(groupName) {
   try {
     if (typeof $surge !== "undefined" && $surge.selectGroupDetails) {
-      const d = $surge.selectGroupDetails(groupName);
-      if (d && d.selected) return d.selected;
+      // Surge API: 不传参数返回全部 select 组，结构通常为 { groups: [{ name/groupName, selected, policies }] }
+      const d = $surge.selectGroupDetails();
+      const groups = d && d.groups ? d.groups : [];
+      const g = groups.find(x =>
+        x.name === groupName ||
+        x.groupName === groupName ||
+        x.policy === groupName ||
+        x.title === groupName
+      );
+      if (g) return g.selected || g.now || g.decision || g.current || "未选择";
     }
-  } catch (_) {}
-  return "读取失败/非 select 组";
+  } catch (e) {
+    return "读取失败";
+  }
+  return "未找到该 select 组";
 }
 
 async function checkNetflix() {
