@@ -143,21 +143,11 @@ async function fetchProxy() {
 function getSelectedPolicy(groupName) {
   try {
     if (typeof $surge !== "undefined" && $surge.selectGroupDetails) {
-      // Surge API: 不传参数返回全部 select 组，结构通常为 { groups: [{ name/groupName, selected, policies }] }
-      const d = $surge.selectGroupDetails();
-      const groups = d && d.groups ? d.groups : [];
-      const g = groups.find(x =>
-        x.name === groupName ||
-        x.groupName === groupName ||
-        x.policy === groupName ||
-        x.title === groupName
-      );
-      if (g) return g.selected || g.now || g.decision || g.current || "未选择";
+      const d = $surge.selectGroupDetails(groupName);
+      if (d && d.selected) return d.selected;
     }
-  } catch (e) {
-    return "读取失败";
-  }
-  return "未找到该 select 组";
+  } catch (_) {}
+  return "读取失败/非 select 组";
 }
 
 async function checkNetflix() {
