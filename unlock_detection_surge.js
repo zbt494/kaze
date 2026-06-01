@@ -1,8 +1,8 @@
-// Surge Panel: 流媒体与 AI 解锁检测
-// Ported from Egern widget by IBL3ND-style logic
+// Surge Panel: 解锁检测稳定版
+// 说明：去掉策略组读取与 ChatGPT 检测，避免分流/多层策略组场景误判。
 
 const BASE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
-const TIMEOUT = 5000;
+const TIMEOUT = 6000;
 
 function getFlag(code) {
   if (!code || code === "XX") return "";
@@ -15,14 +15,13 @@ function getFlag(code) {
 
 function request(url, opts = {}) {
   return new Promise(resolve => {
-    const method = opts.method || "GET";
-    const headers = opts.headers || {};
-    const timeout = opts.timeout || TIMEOUT;
-    const followRedirect = opts.followRedirect;
-    const req = { url, headers, timeout };
-    if (typeof followRedirect === "boolean") req["auto-redirect"] = followRedirect;
-
-    $httpClient[method.toLowerCase()](req, (error, response, data) => {
+    const req = {
+      url,
+      headers: opts.headers || {},
+      timeout: opts.timeout || TIMEOUT
+    };
+    if (typeof opts.followRedirect === "boolean") req["auto-redirect"] = opts.followRedirect;
+    $httpClient.get(req, (error, response, data) => {
       if (error) return resolve(null);
       resolve({ response, data: data || "" });
     });
@@ -32,72 +31,33 @@ function request(url, opts = {}) {
 async function fetchProxy() {
   const sources = [
     {
-      name: "ip-api",
+      source: "ip-api",
       url: "http://ip-api.com/json/?lang=zh-CN",
       parse: body => {
         const d = JSON.parse(body || "{}");
-        return {
-          source: "ip-api",
-          ip: d.query || "",
-          cc: d.countryCode || "XX",
-          country: d.country || "未知",
-          city: d.city || "",
-          asn: d.as || ""
-        };
+        return { source: "ip-api", ip: d.query || "", cc: d.countryCode || "XX", country: d.country || "未知", city: d.city || "", asn: d.as || "" };
       }
     },
     {
-      name: "ip.sb",
+      source: "ip.sb",
       url: "https://api.ip.sb/geoip",
       parse: body => {
         const d = JSON.parse(body || "{}");
-        return {
-          source: "ip.sb",
-          ip: d.ip || "",
-          cc: d.country_code || "XX",
-          country: d.country || "未知",
-          city: d.city || "",
-          asn: d.asn ? `AS${d.asn} ${d.organization || ""}`.trim() : (d.organization || "")
-        };
+        return { source: "ip.sb", ip: d.ip || "", cc: d.country_code || "XX", country: d.country || "未知", city: d.city || "", asn: d.asn ? `AS${d.asn} ${d.organization || ""}`.trim() : (d.organization || "") };
       }
     },
     {
-      name: "ipapi.co",
-      url: "https://ipapi.co/json/",
-      parse: body => {
-        const d = JSON.parse(body || "{}");
-        return {
-          source: "ipapi.co",
-          ip: d.ip || "",
-          cc: d.country_code || "XX",
-          country: d.country_name || "未知",
-          city: d.city || "",
-          asn: d.asn || ""
-        };
-      }
-    },
-    {
-      name: "ipinfo",
+      source: "ipinfo",
       url: "https://ipinfo.io/json",
       parse: body => {
         const d = JSON.parse(body || "{}");
-        return {
-          source: "ipinfo",
-          ip: d.ip || "",
-          cc: d.country || "XX",
-          country: d.country || "未知",
-          city: d.city || "",
-          asn: d.org || ""
-        };
+        return { source: "ipinfo", ip: d.ip || "", cc: d.country || "XX", country: d.country || "未知", city: d.city || "", asn: d.org || "" };
       }
     }
   ];
 
   const results = await Promise.all(sources.map(async s => {
-    const r = await request(s.url, {
-      timeout: 5000,
-      headers: { "User-Agent": BASE_UA, "Accept": "application/json" }
-    });
+    const r = await request(s.url, { timeout: 5000, headers: { "User-Agent": BASE_UA, "Accept": "application/json" } });
     try {
       if (!r || !r.data) return null;
       return s.parse(r.data);
@@ -107,47 +67,21 @@ async function fetchProxy() {
   }));
 
   const valid = results.filter(Boolean);
+  if (!valid.length) return { ip: "未知", cc: "XX", flag: "", country: "未知", city: "", asn: "", sources: [] };
 
-  function choosePrimary(list) {
-    if (!list.length) return { ip: "", cc: "XX", country: "未知", city: "", asn: "", source: "none" };
+  const counts = {};
+  valid.forEach(x => counts[x.cc] = (counts[x.cc] || 0) + 1);
+  let bestCc = valid[0].cc;
+  Object.keys(counts).forEach(cc => { if (counts[cc] > counts[bestCc]) bestCc = cc; });
 
-    // 多源多数表决：避免 ip-api 单源把 HK 误判成 FR 时影响面板结果。
-    const counts = {};
-    list.forEach(x => {
-      const cc = x.cc || "XX";
-      counts[cc] = (counts[cc] || 0) + 1;
-    });
+  const primary = valid.find(x => x.cc === bestCc && x.source === "ip.sb")
+    || valid.find(x => x.cc === bestCc && x.source === "ipinfo")
+    || valid.find(x => x.cc === bestCc)
+    || valid[0];
 
-    let bestCc = list[0].cc || "XX";
-    let bestCount = counts[bestCc] || 0;
-    Object.keys(counts).forEach(cc => {
-      if (counts[cc] > bestCount) {
-        bestCc = cc;
-        bestCount = counts[cc];
-      }
-    });
-
-    // 同票时优先信任 ip.sb / ipinfo，再退回第一个。
-    return list.find(x => x.cc === bestCc && x.source === "ip.sb")
-      || list.find(x => x.cc === bestCc && x.source === "ipinfo")
-      || list.find(x => x.cc === bestCc)
-      || list[0];
-  }
-
-  const primary = choosePrimary(valid);
   primary.flag = getFlag(primary.cc);
   primary.sources = valid;
   return primary;
-}
-
-function getSelectedPolicy(groupName) {
-  try {
-    if (typeof $surge !== "undefined" && $surge.selectGroupDetails) {
-      const d = $surge.selectGroupDetails(groupName);
-      if (d && d.selected) return d.selected;
-    }
-  } catch (_) {}
-  return "读取失败/非 select 组";
 }
 
 async function checkNetflix() {
@@ -155,156 +89,77 @@ async function checkNetflix() {
     "https://www.netflix.com/title/70143836",
     "https://www.netflix.com/title/81280792"
   ];
-
   for (const url of probes) {
     const r = await request(url, {
       timeout: 6000,
-      headers: {
-        "User-Agent": BASE_UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
-      },
+      headers: { "User-Agent": BASE_UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" },
       followRedirect: false
     });
-
     if (!r || !r.response) continue;
     const status = r.response.status;
     const body = String(r.data || "");
-
-    if (status === 200 || status === 301 || status === 302 || status === 401) {
-      return { status: "已解锁", code: "OK" };
-    }
-    if (status === 403 || status === 404 || /title is not available|not available|unavailable/i.test(body)) {
-      return { status: "未解锁", code: "NO" };
-    }
+    if (status === 200 || status === 301 || status === 302 || status === 401) return { status: "已解锁", code: "OK" };
+    if (status === 403 || status === 404 || /not available|unavailable/i.test(body)) return { status: "未解锁", code: "NO" };
   }
-
   return { status: "检测失败", code: "ERR" };
 }
 
 async function checkDisney() {
-  const r = await request("https://www.disneyplus.com", {
-    timeout: 5000,
-    headers: { "User-Agent": BASE_UA },
-    followRedirect: false
-  });
+  const r = await request("https://www.disneyplus.com", { timeout: 6000, headers: { "User-Agent": BASE_UA }, followRedirect: false });
   const status = r && r.response && r.response.status;
-  if (!status || status === 403) return { status: "未解锁", code: "NO" };
+  if (!status) return { status: "检测失败", code: "ERR" };
+  if (status === 403) return { status: "未解锁", code: "NO" };
   return { status: "已解锁", code: "OK" };
 }
 
 async function checkChatGPT() {
-  // 严格检测：ChatGPT 的 Cloudflare trace 可访问不等于 ChatGPT 可用。
-  // 这里先取 trace 地区，再访问 OpenAI backend API。受限地区通常会返回 unsupported_country / 403。
-  const trace = await request("https://chatgpt.com/cdn-cgi/trace", {
-    timeout: 4000,
-    headers: { "User-Agent": BASE_UA }
-  });
-
-  let cc = "OK";
-  if (trace && trace.data) {
-    const m = trace.data.match(/loc=([A-Z]{2})/);
-    if (m && m[1]) cc = m[1].toUpperCase();
-  }
-
-  const r = await request("https://chatgpt.com/backend-api/models", {
-    timeout: 6000,
-    headers: {
-      "User-Agent": BASE_UA,
-      "Accept": "application/json,text/plain,*/*",
-      "Referer": "https://chatgpt.com/"
-    },
-    followRedirect: false
-  });
-
-  if (!r || !r.response) return { status: "检测失败", code: "ERR" };
-
-  const status = r.response.status;
-  const body = String(r.data || "");
-
-  if (status === 403 || /unsupported_country|not available|not supported|country/i.test(body)) {
+  try {
+    const r = await request("https://chatgpt.com/cdn-cgi/trace", { timeout: 4000 });
+    if (!r || !r.data) return { status: "未解锁", code: "NO" };
+    const m = r.data.match(/loc=([A-Z]{2})/);
+    return { status: "已解锁", code: m && m[1] ? m[1].toUpperCase() : "OK" };
+  } catch (_) {
     return { status: "未解锁", code: "NO" };
   }
-
-  // 未登录时可能返回 401/403/404，地区可用性检测主要看是否出现 unsupported_country。
-  // 2xx/3xx/401 通常说明没有被地区封锁。
-  if ((status >= 200 && status < 400) || status === 401) {
-    return { status: "已解锁", code: cc };
-  }
-
-  return { status: "检测失败", code: "ERR" };
 }
 
 async function checkClaude() {
-  const r = await request("https://claude.ai/login", {
-    timeout: 5000,
-    headers: { "User-Agent": BASE_UA }
-  });
-  if (!r || !r.response || !r.response.status) return { status: "未解锁", code: "NO" };
-  if (r.response.status === 403) return { status: "未解锁", code: "NO" };
+  const r = await request("https://claude.ai/login", { timeout: 6000, headers: { "User-Agent": BASE_UA }, followRedirect: false });
+  const status = r && r.response && r.response.status;
+  if (!status) return { status: "检测失败", code: "ERR" };
+  if (status === 403) return { status: "未解锁", code: "NO" };
   return { status: "已解锁", code: "OK" };
 }
 
 async function checkGemini() {
-  const r = await request("https://gemini.google.com/app", {
-    timeout: 5000,
-    headers: { "User-Agent": BASE_UA },
-    followRedirect: false
-  });
-  if (!r || !r.response || !r.response.status) return { status: "未解锁", code: "NO" };
-  if (r.response.status === 403) return { status: "未解锁", code: "NO" };
+  const r = await request("https://gemini.google.com/app", { timeout: 6000, headers: { "User-Agent": BASE_UA }, followRedirect: false });
+  const status = r && r.response && r.response.status;
+  if (!status) return { status: "检测失败", code: "ERR" };
+  if (status === 403) return { status: "未解锁", code: "NO" };
   return { status: "已解锁", code: "OK" };
 }
 
 function fmtResult(name, res, proxy) {
-  let mark = "❌";
-  let suffix = "";
-
-  if (res.code === "OK") {
-    mark = "✅";
-    suffix = proxy && proxy.cc ? `${proxy.flag}${proxy.cc}` : "";
-  } else if (res.code === "NO") {
-    mark = "❌";
-  } else if (/^[A-Z]{2}$/.test(res.code)) {
-    mark = "✅";
-    suffix = `${getFlag(res.code)}${res.code}`;
-  } else if (res.code === "ERR") {
-    mark = "⚠️";
-  }
-
-  return `${name}: ${mark} ${res.status}${suffix ? " › " + suffix : ""}`;
+  if (res.code === "OK") return `${name}: ✅ ${res.status} › ${proxy.flag}${proxy.cc}`;
+  if (res.code === "NO") return `${name}: ❌ ${res.status}`;
+  return `${name}: ⚠️ ${res.status}`;
 }
 
 (async () => {
   try {
     const [proxy, netflix, disney, chatgpt, claude, gemini] = await Promise.all([
-      fetchProxy(),
-      checkNetflix(),
-      checkDisney(),
-      checkChatGPT(),
-      checkClaude(),
-      checkGemini()
+      fetchProxy(), checkNetflix(), checkDisney(), checkChatGPT(), checkClaude(), checkGemini()
     ]);
 
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
-    const geoLines = proxy.sources && proxy.sources.length
-      ? proxy.sources.map(s => {
-          const city = s.city ? ` ${s.city}` : "";
-          return `${s.source}: ${getFlag(s.cc)}${s.cc} ${s.country}${city}`;
-        })
-      : [`定位源: ${proxy.flag}${proxy.cc} ${proxy.country}`];
-
-    const aigcPolicy = getSelectedPolicy("AIGC");
-    const proxyPolicy = getSelectedPolicy("Proxy");
-    const finalPolicy = getSelectedPolicy("FINAL");
+    const geoLines = proxy.sources.length
+      ? proxy.sources.map(s => `${s.source}: ${getFlag(s.cc)}${s.cc} ${s.country}${s.city ? " " + s.city : ""}`)
+      : ["定位源: 获取失败"];
 
     const content = [
       `当前 IP: ${proxy.ip || "未知"}`,
-      `AIGC 节点: ${aigcPolicy}`,
-      `Proxy 节点: ${proxyPolicy}`,
-      `FINAL 节点: ${finalPolicy}`,
       `主定位: ${proxy.flag}${proxy.cc} ${proxy.country}${proxy.city ? " " + proxy.city : ""}`,
       proxy.asn ? `ASN: ${proxy.asn}` : "",
       "",
@@ -322,20 +177,10 @@ function fmtResult(name, res, proxy) {
       fmtResult("Gemini", gemini, proxy),
       "",
       `更新时间: ${time}`
-    ].filter(line => line !== "").join("\n");
+    ].filter(Boolean).join("\n");
 
-    $done({
-      title: "解锁检测",
-      content,
-      icon: "lock.open.fill",
-      "icon-color": "#007AFF"
-    });
+    $done({ title: "解锁检测", content, icon: "lock.open.fill", "icon-color": "#007AFF" });
   } catch (e) {
-    $done({
-      title: "解锁检测",
-      content: `检测失败: ${e && e.message ? e.message : e}`,
-      icon: "xmark.octagon.fill",
-      "icon-color": "#FF3B30"
-    });
+    $done({ title: "解锁检测", content: `检测失败: ${e && e.message ? e.message : e}`, icon: "xmark.octagon.fill", "icon-color": "#FF3B30" });
   }
 })();
